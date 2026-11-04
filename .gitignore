@@ -1,0 +1,6 @@
+browser_profile/
+done.json
+__pycache__/
+node_modules/
+dist/
+.DS_Store
