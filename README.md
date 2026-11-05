@@ -1,7 +1,12 @@
-# Cardmarket Bulk Watchlist
+# Cardmarket Wants List Uploader
 
-Bulk-add Pokémon cards of a set to a Cardmarket watchlist using Playwright browser automation.
-Card data comes from TCGdex. You log in manually in the opened browser; the session is kept in `browser_profile/`.
+Paste card names -> they are matched on TCGdex and converted to the lines Cardmarket's
+"Add Deck List" box needs (`<qty> <name> <ability/attack names>`) -> a browser you log in to
+creates/opens a Wants list and pastes them -> you get a summary of added / not added.
+
+Cardmarket cannot add a Pokémon by name alone, so each line carries its ability and attack names
+(e.g. `Umbreon ex Moon Mirage Onyx`). Names with several different versions are shown for you to choose.
+Limit: 150 entries per run (Cardmarket's per-list limit).
 
 ## Setup
 ```
@@ -11,18 +16,17 @@ cd frontend && npm install
 
 ## UI
 ```
-python3 server.py                  # terminal 1 (127.0.0.1:5001)
-cd frontend && npm run dev         # terminal 2 -> http://localhost:5173
+python3 server.py                  # 127.0.0.1:5001
+cd frontend && npm run dev         # http://localhost:5173
 ```
 
 ## CLI
 ```
-python3 bulk_watchlist.py --list-sets
-python3 bulk_watchlist.py --set sv03.5 --numbers 1-5 --dry-run
-python3 bulk_watchlist.py --set sv03.5 --watchlist "My list"
+printf 'Umbreon ex\n2x Scoop Up Net\n' | python3 bulk_watchlist.py --dry-run
+python3 bulk_watchlist.py --file cards.txt --list "My list"
 ```
 
 ## Status
-Verified: card fetching, dry run, API, frontend build.
-Not verified: the Cardmarket click step (`add_to_watchlist()` selectors are guesses).
-Test with one card and a throwaway watchlist first.
+Verified: name matching and line building, API, frontend build.
+Not verified: the Cardmarket browser steps (open/create list, paste, read the result messages).
+On any failure a screenshot and the page HTML are saved to `debug/`.

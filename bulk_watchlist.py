@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Bulk-add Pokémon cards of a TCGdex set to a Cardmarket watchlist (Playwright)."""
+"""Paste card names -> build Cardmarket deck-list lines -> add them to a Wants list (Playwright)."""
 import argparse
-import json
+import re
 import sys
-import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -12,106 +11,132 @@ import requests
 API = "https://api.tcgdex.net/v2/en"
 HERE = Path(__file__).parent
 PROFILE = HERE / "browser_profile"
-DONE_FILE = HERE / "done.json"
-CM_URL = "https://www.cardmarket.com/en/Pokemon/Products?idProduct={}"
+DEBUG = HERE / "debug"
+WANTS_URL = "https://www.cardmarket.com/en/Pokemon/Wants"
+MAX_ENTRIES = 150
+MAX_CANDIDATES = 40
 
 
-def list_sets():
-    return requests.get(f"{API}/sets", timeout=30).json()
+def parse_line(line):
+    """'3x Charizard ex' / '3 Charizard ex' / 'Charizard ex' -> (3, 'Charizard ex')."""
+    m = re.match(r"^\s*(\d+)\s*x?\s+(.+?)\s*$", line, re.I)
+    return (int(m.group(1)), m.group(2)) if m else (1, line.strip())
 
 
-def parse_numbers(spec):
-    """'1-5,8,12' -> {'1','2','3','4','5','8','12'} (compared against localId, leading zeros ignored)."""
-    out = set()
-    for part in spec.split(","):
-        part = part.strip()
-        if "-" in part:
-            a, b = part.split("-")
-            out.update(str(n) for n in range(int(a), int(b) + 1))
-        elif part:
-            out.add(str(int(part)))
-    return out
+def cm_text(card):
+    """Name + ability names + attack names, the form Cardmarket needs for Pokémon cards."""
+    parts = [card["name"]]
+    parts += [a["name"] for a in card.get("abilities") or []]
+    parts += [a["name"] for a in card.get("attacks") or []]
+    return " ".join(parts)
 
 
-def fetch_cards(set_id, numbers=None):
-    brief = requests.get(f"{API}/sets/{set_id}", timeout=30).json()["cards"]
-    if numbers:
-        brief = [c for c in brief if c["localId"].lstrip("0") in numbers]
-
-    def detail(c):
-        d = requests.get(f"{API}/cards/{c['id']}", timeout=30).json()
-        pid = (d.get("pricing") or {}).get("cardmarket", {}).get("idProduct")
-        return {"id": c["id"], "number": c["localId"], "name": c["name"],
-                "idProduct": pid, "url": CM_URL.format(pid) if pid else None}
-
+def resolve_name(name):
+    """Returns {'status': ok|ambiguous|not_found, 'options': [cardmarket text, ...]}."""
+    brief = requests.get(f"{API}/cards", params={"name": f"eq:{name}"}, timeout=30).json()
+    if not isinstance(brief, list) or not brief:
+        return {"status": "not_found", "options": []}
     with ThreadPoolExecutor(8) as ex:
-        return list(ex.map(detail, brief))
+        details = list(ex.map(lambda c: requests.get(f"{API}/cards/{c['id']}", timeout=30).json(),
+                              brief[:MAX_CANDIDATES]))
+    options = list(dict.fromkeys(cm_text(d) for d in details))
+    return {"status": "ok" if len(options) == 1 else "ambiguous", "options": options}
 
 
-def load_done():
-    return set(json.loads(DONE_FILE.read_text())) if DONE_FILE.exists() else set()
+def resolve_text(text):
+    """Pasted text -> list of {raw, qty, name, status, options, line}. `line` is set when unambiguous."""
+    items = []
+    for raw in (l for l in text.splitlines() if l.strip()):
+        qty, name = parse_line(raw)
+        r = resolve_name(name)
+        line = None
+        if r["status"] == "ok":
+            line = f"{qty} {r['options'][0]}"
+        items.append({"raw": raw, "qty": qty, "name": name, **r, "line": line})
+    return items
 
 
-def add_to_watchlist(page, url, watchlist):
-    # NOTE: selectors are unverified guesses; adjust against the real Cardmarket DOM.
-    page.goto(url, wait_until="domcontentloaded")
-    page.locator("a[href*='Watchlist'], button:has-text('Watchlist')").first.click()
-    page.get_by_text(watchlist, exact=True).first.click()
-    page.wait_for_timeout(500)
+def _save_debug(page, tag):
+    DEBUG.mkdir(exist_ok=True)
+    page.screenshot(path=str(DEBUG / f"{tag}.png"), full_page=True)
+    (DEBUG / f"{tag}.html").write_text(page.content())
 
 
-def run(cards, watchlist, delay):
+def open_or_create_list(page, list_name):
+    page.goto(WANTS_URL, wait_until="domcontentloaded")
+    title = page.get_by_text(list_name, exact=True)
+    if title.count():
+        card = page.locator("div").filter(has=title).filter(has=page.get_by_text("View / Edit List")).last
+        card.get_by_text("View / Edit List").first.click()
+    else:
+        page.locator("input[type=text]").first.fill(list_name)
+        page.get_by_text(re.compile(r"add list", re.I)).first.click()
+        page.wait_for_load_state("domcontentloaded")
+        page.get_by_text(list_name, exact=True).first.click()
+    page.wait_for_load_state("domcontentloaded")
+
+
+def add_decklist(page, list_name, lines):
+    """Pastes `lines` into the list's Add Deck List page. Returns the result dict."""
+    open_or_create_list(page, list_name)
+    page.get_by_text(re.compile(r"add deck ?list", re.I)).first.click()
+    page.wait_for_load_state("domcontentloaded")
+    page.locator("textarea").first.fill("\n".join(lines))
+    page.get_by_role("button", name=re.compile(r"^\s*add to", re.I)).click()
+    page.wait_for_load_state("domcontentloaded")
+    page.wait_for_timeout(1000)
+    _save_debug(page, "after_submit")
+    alerts = [a.inner_text() for a in page.locator(".alert").all()]
+    bad = " ".join(a for a, el in zip(alerts, page.locator(".alert").all())
+                   if re.search(r"danger|error", el.get_attribute("class") or ""))
+    failed = [l for l in lines if re.sub(r"^\d+x?\s+", "", l, flags=re.I).lower() in bad.lower()]
+    return {"added": [l for l in lines if l not in failed], "not_added": failed, "messages": alerts}
+
+
+def run(lines, list_name, wait_for_login):
     from playwright.sync_api import sync_playwright
 
-    done = load_done()
     with sync_playwright() as p:
         ctx = p.chromium.launch_persistent_context(str(PROFILE), headless=False)
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
-        page.goto("https://www.cardmarket.com/en/Pokemon")
-        input("Log in to Cardmarket in the browser window, then press Enter here... ")
-        for i, c in enumerate(cards, 1):
-            if c["id"] in done:
-                print(f"[{i}/{len(cards)}] skip {c['id']} (already done)")
-                continue
-            try:
-                add_to_watchlist(page, c["url"], watchlist)
-                done.add(c["id"])
-                DONE_FILE.write_text(json.dumps(sorted(done)))
-                print(f"[{i}/{len(cards)}] added {c['id']} {c['name']}")
-            except Exception as e:
-                print(f"[{i}/{len(cards)}] FAILED {c['id']} {c['name']} ({page.url}): {e}")
-            time.sleep(delay)
-        ctx.close()
+        try:
+            page.goto("https://www.cardmarket.com/en/Pokemon")
+            wait_for_login()
+            return add_decklist(page, list_name, lines)
+        except Exception:
+            _save_debug(page, "error")
+            raise
+        finally:
+            ctx.close()
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--list-sets", action="store_true")
-    ap.add_argument("--set", help="TCGdex set id, e.g. sv03.5")
-    ap.add_argument("--numbers", help="e.g. 1-5,8")
-    ap.add_argument("--watchlist", help="Name of the target watchlist")
-    ap.add_argument("--delay", type=float, default=3.0)
-    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--file", help="text file with one card per line (default: stdin)")
+    ap.add_argument("--list", dest="list_name", help="Wants list name (created if missing)")
+    ap.add_argument("--dry-run", action="store_true", help="only resolve names, do not open the browser")
     a = ap.parse_args()
 
-    if a.list_sets:
-        for s in list_sets():
-            print(s["id"], "-", s["name"])
+    text = Path(a.file).read_text() if a.file else sys.stdin.read()
+    items = resolve_text(text)
+    ok = [i for i in items if i["line"]]
+    for i in items:
+        print(f"[{i['status']}] {i['raw']!r}" + (f" -> {i['line']}" if i["line"] else
+              f" options: {i['options'][:5]}" if i["options"] else ""))
+    if len(ok) > MAX_ENTRIES:
+        sys.exit(f"{len(ok)} entries; the limit is {MAX_ENTRIES} per run.")
+    if a.dry_run or not ok:
         return
-    if not a.set:
-        ap.error("--set is required")
-    cards = fetch_cards(a.set, parse_numbers(a.numbers) if a.numbers else None)
-    missing = [c for c in cards if not c["url"]]
-    cards = [c for c in cards if c["url"]]
-    if a.dry_run:
-        for c in cards:
-            print(c["id"], c["name"], c["url"])
-        print(f"{len(cards)} cards, {len(missing)} without Cardmarket id")
-        return
-    if not a.watchlist:
-        ap.error("--watchlist is required unless --dry-run")
-    run(cards, a.watchlist, a.delay)
+    if not a.list_name:
+        ap.error("--list is required unless --dry-run")
+    res = run([i["line"] for i in ok], a.list_name,
+              lambda: input("Log in to Cardmarket in the browser window, then press Enter... "))
+    print(f"\nAdded: {len(res['added'])}  Not added: {len(res['not_added'])}")
+    for l in res["not_added"]:
+        print("  not added:", l)
+    print("Cardmarket said:", *res["messages"], sep="\n  ")
+    print(f"Unresolved names (never sent): {[i['raw'] for i in items if not i['line']]}")
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

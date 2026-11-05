@@ -1,27 +1,21 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 
 const API = 'http://127.0.0.1:5001/api'
+const MAX = 150
 const post = (path, body) =>
   fetch(`${API}${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body ?? {}),
-  })
+  }).then(r => r.json())
 
 export default function App() {
-  const [sets, setSets] = useState([])
-  const [setId, setSetId] = useState('')
-  const [cards, setCards] = useState([])
-  const [loading, setLoading] = useState(false)
-  const [selected, setSelected] = useState(new Set())
-  const [filter, setFilter] = useState('')
-  const [watchlist, setWatchlist] = useState('')
-  const [delay, setDelay] = useState(3)
-  const [job, setJob] = useState({ status: 'idle', total: 0, index: 0, log: [] })
-
-  useEffect(() => {
-    fetch(`${API}/sets`).then(r => r.json()).then(setSets).catch(() => {})
-  }, [])
+  const [text, setText] = useState('')
+  const [listName, setListName] = useState('')
+  const [items, setItems] = useState(null)
+  const [picks, setPicks] = useState({})
+  const [busy, setBusy] = useState(false)
+  const [job, setJob] = useState({ status: 'idle', result: null, error: null })
 
   useEffect(() => {
     const t = setInterval(() => {
@@ -30,88 +24,86 @@ export default function App() {
     return () => clearInterval(t)
   }, [])
 
-  const loadSet = async id => {
-    setSetId(id)
-    setCards([])
-    setSelected(new Set())
-    if (!id) return
-    setLoading(true)
-    const data = await fetch(`${API}/sets/${id}/cards`).then(r => r.json())
-    setCards(data)
-    setLoading(false)
+  const resolve = async () => {
+    setBusy(true)
+    setPicks({})
+    setItems(await post('/resolve', { text }))
+    setBusy(false)
   }
 
-  const shown = useMemo(() => {
-    const f = filter.toLowerCase()
-    return cards.filter(c => c.name.toLowerCase().includes(f) || c.number.includes(f))
-  }, [cards, filter])
+  const lineFor = (it, i) =>
+    it.line ?? (picks[i] !== undefined && picks[i] !== '' ? `${it.qty} ${picks[i]}` : null)
 
-  const toggle = id =>
-    setSelected(s => {
-      const n = new Set(s)
-      n.has(id) ? n.delete(id) : n.add(id)
-      return n
-    })
-  const selectShown = on =>
-    setSelected(s => {
-      const n = new Set(s)
-      shown.filter(c => c.url).forEach(c => (on ? n.add(c.id) : n.delete(c.id)))
-      return n
-    })
-
-  const busy = ['starting', 'waiting_login', 'running'].includes(job.status)
-  const start = () =>
-    post('/start', { cards: cards.filter(c => selected.has(c.id)), watchlist, delay })
-  const pct = job.total ? Math.round((job.index / job.total) * 100) : 0
+  const lines = (items ?? []).map(lineFor).filter(Boolean)
+  const skipped = (items ?? []).filter((it, i) => !lineFor(it, i))
+  const running = ['starting', 'waiting_login', 'running'].includes(job.status)
+  const tooMany = lines.length > MAX
 
   return (
     <main>
-      <h1>Cardmarket Bulk Watchlist</h1>
+      <h1>Cardmarket Wants List Uploader</h1>
 
-      <section className="controls">
-        <select value={setId} onChange={e => loadSet(e.target.value)}>
-          <option value="">Choose a set…</option>
-          {sets.map(s => (
-            <option key={s.id} value={s.id}>{s.name} ({s.id})</option>
-          ))}
-        </select>
-        <input placeholder="Watchlist name" value={watchlist} onChange={e => setWatchlist(e.target.value)} />
-        <label>
-          Delay (s)
-          <input type="number" min="1" value={delay} onChange={e => setDelay(e.target.value)} />
-        </label>
-      </section>
-
-      <section className="controls">
-        <input placeholder="Filter by name or number" value={filter} onChange={e => setFilter(e.target.value)} />
-        <button onClick={() => selectShown(true)}>Select all</button>
-        <button onClick={() => selectShown(false)}>Select none</button>
-        <button className="primary" disabled={busy || !selected.size || !watchlist} onClick={start}>
-          Add {selected.size} cards
+      <section className="panel">
+        <h2>1. Paste card names</h2>
+        <p className="hint">One per line. Optional amount: <code>2x Charizard ex</code>. Max {MAX} entries per run.</p>
+        <textarea rows={10} value={text} onChange={e => setText(e.target.value)} placeholder={'Umbreon ex\n2x Scoop Up Net\nMunkidori'} />
+        <button className="primary" disabled={busy || !text.trim()} onClick={resolve}>
+          {busy ? 'Matching…' : 'Match cards'}
         </button>
       </section>
 
-      {loading && <p>Loading cards…</p>}
+      {items && (
+        <section className="panel">
+          <h2>2. Review</h2>
+          <table>
+            <tbody>
+              {items.map((it, i) => (
+                <tr key={i} className={it.status}>
+                  <td>{it.raw}</td>
+                  <td>
+                    {it.status === 'ok' && <code>{it.line}</code>}
+                    {it.status === 'not_found' && <em>Not found — will be skipped</em>}
+                    {it.status === 'ambiguous' && (
+                      <select value={picks[i] ?? ''} onChange={e => setPicks({ ...picks, [i]: e.target.value })}>
+                        <option value="">Choose a version…</option>
+                        {it.options.map(o => <option key={o} value={o}>{o}</option>)}
+                      </select>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p>{lines.length} ready, {skipped.length} will be skipped.{tooMany && <strong> Over the {MAX} limit.</strong>}</p>
+        </section>
+      )}
 
-      <div className="grid">
-        {shown.map(c => (
-          <label key={c.id} className={`card ${selected.has(c.id) ? 'on' : ''} ${c.url ? '' : 'off'}`}>
-            <input type="checkbox" disabled={!c.url} checked={selected.has(c.id)} onChange={() => toggle(c.id)} />
-            {c.image ? <img src={c.image} alt={c.name} loading="lazy" /> : <div className="noimg" />}
-            <span>#{c.number} {c.name}</span>
-          </label>
-        ))}
-      </div>
-
-      {job.status !== 'idle' && (
-        <section className="job">
-          <strong>Status: {job.status}</strong>
+      {items && (
+        <section className="panel">
+          <h2>3. Send to Cardmarket</h2>
+          <div className="row">
+            <input placeholder="Wants list name (created if missing)" value={listName} onChange={e => setListName(e.target.value)} />
+            <button className="primary" disabled={running || !lines.length || tooMany || !listName.trim()}
+              onClick={() => post('/start', { lines, list: listName.trim() })}>
+              Add {lines.length} cards
+            </button>
+          </div>
           {job.status === 'waiting_login' && (
-            <button className="primary" onClick={() => post('/logged-in')}>I'm logged in</button>
+            <p>
+              Log in to Cardmarket in the browser window that opened, then{' '}
+              <button className="primary" onClick={() => post('/logged-in')}>I'm logged in</button>
+            </p>
           )}
-          {busy && <button onClick={() => post('/stop')}>Stop</button>}
-          <progress value={job.index} max={job.total || 1} /> {pct}% ({job.index}/{job.total})
-          <pre>{job.log.join('\n')}</pre>
+          {running && job.status !== 'waiting_login' && <p>Working… ({job.status})</p>}
+          {job.status === 'error' && <p className="bad">Error: {job.error}. Screenshots saved in <code>debug/</code>.</p>}
+          {job.result && (
+            <div>
+              <h3>{job.result.added.length} added, {job.result.not_added.length} not added</h3>
+              {job.result.not_added.length > 0 && <ul>{job.result.not_added.map(l => <li key={l}>{l}</li>)}</ul>}
+              <pre>{job.result.messages.join('\n')}</pre>
+            </div>
+          )}
+          {skipped.length > 0 && <p className="hint">Never sent: {skipped.map(s => s.raw).join(', ')}</p>}
         </section>
       )}
     </main>
