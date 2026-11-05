@@ -57,16 +57,36 @@ def cm_text(card):
     return " ".join(parts)
 
 
-def resolve_name(name):
-    """Returns {'status': ok|ambiguous|not_found, 'options': [cardmarket text, ...]}."""
+def _fetch_details(brief, limit):
+    with ThreadPoolExecutor(12) as ex:
+        return list(ex.map(lambda c: requests.get(f"{API}/cards/{c['id']}", timeout=30).json(), brief[:limit]))
+
+
+def _by_name(name):
     brief = requests.get(f"{API}/cards", params={"name": f"eq:{name}"}, timeout=30).json()
-    if not isinstance(brief, list) or not brief:
-        return {"status": "not_found", "options": []}
-    with ThreadPoolExecutor(8) as ex:
-        details = list(ex.map(lambda c: requests.get(f"{API}/cards/{c['id']}", timeout=30).json(),
-                              brief[:MAX_CANDIDATES]))
-    options = list(dict.fromkeys(cm_text(d) for d in details))
-    return {"status": "ok" if len(options) == 1 else "ambiguous", "options": options}
+    return brief if isinstance(brief, list) else []
+
+
+def resolve_name(name):
+    """Returns {'status': ok|ambiguous|not_found, 'options': [cardmarket text, ...]}.
+    Accepts a trailing set name/id too: 'Gengar Fossil', 'Gengar (Fossil)', 'Gengar base3'."""
+    name = re.sub(r"[()\[\]]", " ", name).strip()
+    words = name.split()
+    # Try the whole text as a card name first, then shorter names with the rest as a set hint.
+    for k in range(len(words), 0, -1):
+        card_name, hint = " ".join(words[:k]), " ".join(words[k:]).lower()
+        brief = _by_name(card_name)
+        if not brief:
+            continue
+        details = _fetch_details(brief, 1000 if hint else MAX_CANDIDATES)
+        if hint:
+            details = [d for d in details if hint in d.get("set", {}).get("name", "").lower()
+                       or hint == d.get("set", {}).get("id", "").lower()]
+            if not details:
+                continue
+        options = list(dict.fromkeys(cm_text(d) for d in details))
+        return {"status": "ok" if len(options) == 1 else "ambiguous", "options": options}
+    return {"status": "not_found", "options": []}
 
 
 def resolve_text(text):

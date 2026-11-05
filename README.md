@@ -6,6 +6,7 @@ creates/opens a Wants list and pastes them -> you get a summary of added / not a
 
 Cardmarket cannot add a Pokémon by name alone, so each line carries its ability and attack names
 (e.g. `Umbreon ex Moon Mirage Onyx`). Names with several different versions are shown for you to choose.
+A set can be added after the name to narrow it: `Gengar Fossil`, `Pikachu (Base Set)`, `Gengar base3`.
 Limit: 150 entries per run (Cardmarket's per-list limit).
 
 ## Setup
