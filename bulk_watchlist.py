@@ -2,7 +2,10 @@
 """Paste card names -> build Cardmarket deck-list lines -> add them to a Wants list (Playwright)."""
 import argparse
 import re
+import socket
+import subprocess
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -10,11 +13,34 @@ import requests
 
 API = "https://api.tcgdex.net/v2/en"
 HERE = Path(__file__).parent
-PROFILE = HERE / "browser_profile"
+PROFILE = HERE / "chrome_profile"
 DEBUG = HERE / "debug"
 WANTS_URL = "https://www.cardmarket.com/en/Pokemon/Wants"
 MAX_ENTRIES = 150
 MAX_CANDIDATES = 40
+CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+CDP_PORT = 9222
+
+
+def _port_open():
+    with socket.socket() as s:
+        s.settimeout(0.5)
+        return s.connect_ex(("127.0.0.1", CDP_PORT)) == 0
+
+
+def start_chrome():
+    """Start the real Chrome as a normal browser (no automation flags, so Cloudflare accepts it).
+    Playwright only attaches to it afterwards. Uses its own profile so your login is remembered."""
+    if _port_open():
+        return
+    subprocess.Popen([CHROME, f"--remote-debugging-port={CDP_PORT}", f"--user-data-dir={PROFILE}",
+                      "--no-first-run", "--no-default-browser-check", "https://www.cardmarket.com/en/Pokemon"],
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for _ in range(40):
+        if _port_open():
+            return
+        time.sleep(0.5)
+    raise RuntimeError("Chrome did not start with remote debugging")
 
 
 def parse_line(line):
@@ -96,18 +122,18 @@ def add_decklist(page, list_name, lines):
 def run(lines, list_name, wait_for_login):
     from playwright.sync_api import sync_playwright
 
+    start_chrome()
+    wait_for_login()  # you log in and pass Cloudflare first; we attach only afterwards
     with sync_playwright() as p:
-        ctx = p.chromium.launch_persistent_context(str(PROFILE), headless=False)
-        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        browser = p.chromium.connect_over_cdp(f"http://127.0.0.1:{CDP_PORT}")
+        page = browser.contexts[0].pages[0]
         try:
-            page.goto("https://www.cardmarket.com/en/Pokemon")
-            wait_for_login()
             return add_decklist(page, list_name, lines)
         except Exception:
             _save_debug(page, "error")
             raise
         finally:
-            ctx.close()
+            browser.close()  # detaches only; your Chrome window stays open
 
 
 def main():

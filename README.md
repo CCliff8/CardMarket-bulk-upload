@@ -26,6 +26,11 @@ printf 'Umbreon ex\n2x Scoop Up Net\n' | python3 bulk_watchlist.py --dry-run
 python3 bulk_watchlist.py --file cards.txt --list "My list"
 ```
 
+## Cloudflare
+Playwright's own Chromium is blocked by Cloudflare. The app therefore starts your real Google Chrome
+(own profile in `chrome_profile/`, remote-debugging port 9222), lets you log in and pass the check normally,
+and only attaches Playwright after you click "I'm logged in". Requires Google Chrome in /Applications.
+
 ## Status
 Verified: name matching and line building, API, frontend build.
 Not verified: the Cardmarket browser steps (open/create list, paste, read the result messages).
