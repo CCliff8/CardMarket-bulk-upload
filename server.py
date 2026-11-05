@@ -41,6 +41,8 @@ def start():
     lines = [l for l in d["lines"] if l.strip()]
     if not lines or not d.get("list"):
         return jsonify(error="lines and list name required"), 400
+    if not bw.LIST_NAME_RE.match(d["list"].strip()):
+        return jsonify(error="List name: 1-30 characters, letters, numbers, spaces and hyphens only."), 400
     if len(lines) > bw.MAX_ENTRIES:
         return jsonify(error=f"max {bw.MAX_ENTRIES} entries per run"), 400
     state.update(status="starting", result=None, error=None)

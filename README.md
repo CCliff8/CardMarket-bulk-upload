@@ -33,5 +33,7 @@ and only attaches Playwright after you click "I'm logged in". Requires Google Ch
 
 ## Status
 Verified: name matching and line building, API, frontend build.
-Not verified: the Cardmarket browser steps (open/create list, paste, read the result messages).
+Verified against a real account: open list, Add Deck List, submit, and reading Cardmarket's added / not-added messages.
+List names must be 1-30 characters: letters, numbers, spaces, hyphens (Cardmarket's rule).
+Not verified: creating a brand-new list (the selectors come from the page HTML).
 On any failure a screenshot and the page HTML are saved to `debug/`.

@@ -88,18 +88,25 @@ def _save_debug(page, tag):
     (DEBUG / f"{tag}.html").write_text(page.content())
 
 
+LIST_NAME_RE = re.compile(r"^[A-Za-z0-9 \-]{1,30}$")  # Cardmarket's own rule for wants-list names
+
+
+def _list_card(page, list_name):
+    title = page.locator("h3.card-title").filter(has_text=re.compile(f"^\\s*{re.escape(list_name)}\\s*$", re.I))
+    return page.locator("div.card").filter(has=title)
+
+
 def open_or_create_list(page, list_name):
+    if not LIST_NAME_RE.match(list_name):
+        raise ValueError("List name: 1-30 characters, letters, numbers, spaces and hyphens only.")
     page.goto(WANTS_URL, wait_until="domcontentloaded")
-    title = page.get_by_text(list_name, exact=True)
-    if title.count():
-        card = page.locator("div").filter(has=title).filter(has=page.get_by_text("View / Edit List")).last
-        card.get_by_text("View / Edit List").first.click()
-    else:
-        page.locator("input[type=text]").first.fill(list_name)
-        page.get_by_text(re.compile(r"add list", re.I)).first.click()
+    if not _list_card(page, list_name).count():
+        page.locator("input[name=wlName]").fill(list_name)
+        page.locator("button.newList-btn").click()
         page.wait_for_load_state("domcontentloaded")
-        page.get_by_text(list_name, exact=True).first.click()
-    page.wait_for_load_state("domcontentloaded")
+        page.goto(WANTS_URL, wait_until="domcontentloaded")
+    href = _list_card(page, list_name).first.get_by_text("View / Edit List").locator("xpath=ancestor-or-self::a").get_attribute("href")
+    page.goto("https://www.cardmarket.com" + href, wait_until="domcontentloaded")
 
 
 def add_decklist(page, list_name, lines):
@@ -108,7 +115,7 @@ def add_decklist(page, list_name, lines):
     page.get_by_text(re.compile(r"add deck ?list", re.I)).first.click()
     page.wait_for_load_state("domcontentloaded")
     page.locator("textarea").first.fill("\n".join(lines))
-    page.get_by_role("button", name=re.compile(r"^\s*add to", re.I)).click()
+    page.locator("button").filter(has_text=re.compile(r"add to", re.I)).last.click()
     page.wait_for_load_state("domcontentloaded")
     page.wait_for_timeout(1000)
     _save_debug(page, "after_submit")
