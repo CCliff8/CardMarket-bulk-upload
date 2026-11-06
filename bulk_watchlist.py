@@ -63,6 +63,11 @@ def cm_text(card):
     return " ".join(parts)
 
 
+def _cm_product_id(card):
+    """Cardmarket idProduct from a TCGdex card; the pricing or cardmarket field can be null."""
+    return ((card.get("pricing") or {}).get("cardmarket") or {}).get("idProduct")
+
+
 def _norm(text):
     text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
     return re.sub(r"\s+", " ", text).strip().lower()
@@ -123,12 +128,53 @@ def resolve_name(name):
             continue
         options = []
         for d in _tcgdex_candidates(card_name, hint):
-            pid = (d.get("pricing") or {}).get("cardmarket", {}).get("idProduct")
+            pid = _cm_product_id(d)
             prod = cat["by_id"].get(pid)
             options.append(_line_text(prod["name"]) if prod else cm_text(d))
         if options:
             return _result(options)
     return {"status": "not_found", "options": []}
+
+
+_sets = None
+
+
+def set_names():
+    global _sets
+    if _sets is None:
+        _sets = {x["id"]: x["name"] for x in requests.get(f"{API}/sets", timeout=30).json()}
+    return _sets
+
+
+def search_cards(query, limit=30):
+    """Autocomplete: 'charizard', 'charizard 151', 'gengar fossil' -> cards with image, set and number."""
+    sets = set_names()
+    words = query.split()
+    seen, out = set(), []
+    for k in range(len(words), 0, -1):
+        name, hint = " ".join(words[:k]), " ".join(words[k:]).lower()
+        brief = requests.get(f"{API}/cards", params={"name": name}, timeout=30).json()
+        for c in brief if isinstance(brief, list) else []:
+            set_id = c["id"].rsplit("-", 1)[0]
+            set_name = sets.get(set_id, set_id)
+            if hint and hint not in set_name.lower() and hint != set_id.lower():
+                continue
+            if c["id"] in seen:
+                continue
+            seen.add(c["id"])
+            out.append({"id": c["id"], "name": c["name"], "number": c["localId"], "setId": set_id,
+                        "setName": set_name, "image": f"{c['image']}/low.webp" if c.get("image") else None})
+        if out:
+            break
+    return out[:limit]
+
+
+def card_line_text(card_id):
+    """Deck-list text for one specific printing, taken from Cardmarket's catalogue via its product id."""
+    d = requests.get(f"{API}/cards/{card_id}", timeout=30).json()
+    pid = _cm_product_id(d)
+    prod = load_catalog()["by_id"].get(pid)
+    return _line_text(prod["name"]) if prod else cm_text(d)
 
 
 def resolve_text(text):

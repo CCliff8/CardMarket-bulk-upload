@@ -14,6 +14,17 @@ state = {"status": "idle", "result": None, "error": None}
 login_event = threading.Event()
 
 
+@app.get("/api/search")
+def search():
+    q = request.args.get("q", "").strip()
+    return jsonify(bw.search_cards(q) if len(q) >= 2 else [])
+
+
+@app.get("/api/card-line/<path:card_id>")
+def card_line(card_id):
+    return jsonify(text=bw.card_line_text(card_id))
+
+
 @app.post("/api/resolve")
 def resolve():
     return jsonify(bw.resolve_text(request.get_json()["text"]))
