@@ -28,6 +28,17 @@ export default function App() {
     return () => clearInterval(t)
   }, [])
 
+  // when a run finishes, clear the card list (the result summary stays visible)
+  const prevStatus = useRef(job.status)
+  useEffect(() => {
+    if (prevStatus.current !== 'finished' && job.status === 'finished') {
+      setItems([])
+      setQuery('')
+      setText('')
+    }
+    prevStatus.current = job.status
+  }, [job.status])
+
   // debounced autocomplete
   useEffect(() => {
     if (query.trim().length < 2) { setResults([]); return }
