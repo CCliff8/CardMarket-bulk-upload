@@ -1,7 +1,10 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 
 const API = 'http://127.0.0.1:5001/api'
-const MAX = 150
+const MAX_ENTRIES = 150
+const MAX_QTY = 999
+const LIST_NAME_RE = /^[A-Za-z0-9 -]{1,30}$/
+
 const post = (path, body) =>
   fetch(`${API}${path}`, {
     method: 'POST',
@@ -9,17 +12,153 @@ const post = (path, body) =>
     body: JSON.stringify(body ?? {}),
   }).then(r => r.json())
 
-export default function App() {
+const qtyOf = i => Math.min(MAX_QTY, Math.max(1, parseInt(i.qty, 10) || 1))
+
+function Spinner() {
+  return <span className="spinner" role="status" aria-label="Loading" />
+}
+
+function QtyStepper({ value, onChange }) {
+  const n = parseInt(value, 10) || 1
+  return (
+    <div className="stepper">
+      <button type="button" aria-label="Decrease amount" onClick={() => onChange(Math.max(1, n - 1))} disabled={n <= 1}>−</button>
+      <input
+        type="text"
+        inputMode="numeric"
+        aria-label="Amount"
+        value={value}
+        onChange={e => {
+          const digits = e.target.value.replace(/\D/g, '').slice(0, 3)
+          onChange(digits === '' ? '' : Math.min(MAX_QTY, parseInt(digits, 10)))
+        }}
+        onBlur={() => { if (!parseInt(value, 10)) onChange(1) }}
+        onFocus={e => e.target.select()}
+      />
+      <button type="button" aria-label="Increase amount" onClick={() => onChange(Math.min(MAX_QTY, n + 1))}>+</button>
+    </div>
+  )
+}
+
+function CardSearch({ onPick, error }) {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState([])
+  const [loading, setLoading] = useState(false)
   const [open, setOpen] = useState(false)
-  const [text, setText] = useState('')
-  const [items, setItems] = useState([]) // {id, label, image, qty, status, options, pick}
-  const [listName, setListName] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [addError, setAddError] = useState('')
-  const [job, setJob] = useState({ status: 'idle', result: null, error: null })
+  const [active, setActive] = useState(-1)
   const boxRef = useRef(null)
+  const listId = useId()
+  const q = query.trim()
+
+  useEffect(() => {
+    if (q.length < 2) return
+    const ctrl = new AbortController()
+    const t = setTimeout(() => {
+      setLoading(true)
+      fetch(`${API}/search?q=${encodeURIComponent(q)}`, { signal: ctrl.signal })
+        .then(r => r.json())
+        .then(r => { setResults(r); setActive(-1); setOpen(true); setLoading(false) })
+        .catch(e => { if (e.name !== 'AbortError') setLoading(false) })
+    }, 250)
+    return () => { clearTimeout(t); ctrl.abort() }
+  }, [q])
+
+  useEffect(() => {
+    const close = e => { if (!boxRef.current?.contains(e.target)) setOpen(false) }
+    document.addEventListener('mousedown', close)
+    return () => document.removeEventListener('mousedown', close)
+  }, [])
+
+  const shown = q.length >= 2 ? results : []
+
+  const choose = c => {
+    onPick(c)
+    setQuery('')
+    setResults([])
+    setOpen(false)
+  }
+
+  const onKeyDown = e => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); setOpen(true); setActive(a => Math.min(shown.length - 1, a + 1)) }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setActive(a => Math.max(0, a - 1)) }
+    else if (e.key === 'Enter' && open && active >= 0) { e.preventDefault(); choose(shown[active]) }
+    else if (e.key === 'Escape') setOpen(false)
+  }
+
+  return (
+    <div className="combo" ref={boxRef}>
+      <div className="search-field">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
+        <input
+          role="combobox"
+          aria-expanded={open}
+          aria-controls={listId}
+          aria-autocomplete="list"
+          aria-activedescendant={active >= 0 ? `${listId}-${active}` : undefined}
+          placeholder="Search a card, e.g. “charizard 151” or “gengar fossil”"
+          value={query}
+          onChange={e => setQuery(e.target.value)}
+          onKeyDown={onKeyDown}
+          onFocus={() => shown.length && setOpen(true)}
+        />
+        {loading && <Spinner />}
+      </div>
+      {open && q.length >= 2 && (
+        <ul className="dropdown" role="listbox" id={listId}>
+          {shown.length === 0 && !loading && <li className="dropdown-empty">No cards found. Try adding a set name.</li>}
+          {shown.map((c, idx) => (
+            <li
+              key={c.id}
+              id={`${listId}-${idx}`}
+              role="option"
+              aria-selected={idx === active}
+              className={idx === active ? 'active' : ''}
+              onMouseEnter={() => setActive(idx)}
+              onClick={() => choose(c)}
+            >
+              {c.image ? <img src={c.image} alt="" loading="lazy" /> : <div className="thumb" />}
+              <div className="opt-text">
+                <strong>{c.name}</strong>
+                <span><span className="chip">{c.setName}</span> #{c.number}</span>
+              </div>
+              <span className="opt-add" aria-hidden="true">+ Add</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {error && <p className="msg error" role="alert">{error}</p>}
+    </div>
+  )
+}
+
+const STEPS = [
+  ['starting', 'Opening Chrome'],
+  ['waiting_login', 'Log in'],
+  ['running', 'Adding cards'],
+  ['finished', 'Done'],
+]
+
+function Progress({ status }) {
+  if (status === 'idle') return null
+  const idx = status === 'error' ? -1 : STEPS.findIndex(([k]) => k === status)
+  return (
+    <ol className="progress" aria-label="Progress">
+      {STEPS.map(([k, label], i) => (
+        <li key={k} className={i < idx ? 'done' : i === idx ? 'current' : ''}>
+          <span className="dot">{i < idx || status === 'finished' ? '✓' : i + 1}</span>{label}
+        </li>
+      ))}
+    </ol>
+  )
+}
+
+export default function App() {
+  const [items, setItems] = useState([]) // {id, label, image, setName, qty, status, options, pick}
+  const [text, setText] = useState('')
+  const [pasteBusy, setPasteBusy] = useState(false)
+  const [addError, setAddError] = useState('')
+  const [listName, setListName] = useState('')
+  const [job, setJob] = useState({ status: 'idle', result: null, error: null })
 
   useEffect(() => {
     const t = setInterval(() => {
@@ -33,27 +172,10 @@ export default function App() {
   useEffect(() => {
     if (prevStatus.current !== 'finished' && job.status === 'finished') {
       setItems([])
-      setQuery('')
       setText('')
     }
     prevStatus.current = job.status
   }, [job.status])
-
-  // debounced autocomplete
-  useEffect(() => {
-    if (query.trim().length < 2) { setResults([]); return }
-    const t = setTimeout(() => {
-      fetch(`${API}/search?q=${encodeURIComponent(query.trim())}`)
-        .then(r => r.json()).then(r => { setResults(r); setOpen(true) }).catch(() => {})
-    }, 250)
-    return () => clearTimeout(t)
-  }, [query])
-
-  useEffect(() => {
-    const close = e => { if (!boxRef.current?.contains(e.target)) setOpen(false) }
-    document.addEventListener('mousedown', close)
-    return () => document.removeEventListener('mousedown', close)
-  }, [])
 
   const startNewBatchIfDone = () => {
     if (job.status === 'finished' || job.status === 'error') {
@@ -65,141 +187,196 @@ export default function App() {
   const addCard = async c => {
     startNewBatchIfDone()
     const key = `card:${c.id}`
-    setOpen(false)
-    setQuery('')
     if (items.some(i => i.id === key)) {
-      setItems(items.map(i => (i.id === key ? { ...i, qty: i.qty + 1 } : i)))
+      setItems(cur => cur.map(i => (i.id === key ? { ...i, qty: Math.min(MAX_QTY, qtyOf(i) + 1) } : i)))
       return
     }
-    let line
     try {
       const r = await fetch(`${API}/card-line/${c.id}`)
       if (!r.ok) throw new Error(`server error ${r.status}`)
-      line = (await r.json()).text
+      const { text: line } = await r.json()
+      setAddError('')
+      setItems(cur => [...cur, {
+        id: key, label: c.name, setName: c.setName, number: c.number, image: c.image,
+        qty: 1, status: 'ok', options: [line], pick: line,
+      }])
     } catch (e) {
       setAddError(`Could not add ${c.name} (${c.setName} #${c.number}): ${e.message}`)
-      return
     }
-    setAddError('')
-    setItems(cur => [...cur, {
-      id: key, label: `${c.name} — ${c.setName} #${c.number}`, image: c.image,
-      qty: 1, status: 'ok', options: [line], pick: line,
-    }])
   }
 
   const matchPasted = async () => {
     startNewBatchIfDone()
-    setBusy(true)
-    const res = await post('/resolve', { text })
-    setItems(cur => [...cur, ...res.map((r, i) => ({
-      id: `paste:${Date.now()}:${i}`, label: r.raw, image: null, qty: r.qty,
-      status: r.status, options: r.options, pick: r.status === 'ok' ? r.options[0] : '',
-    }))])
-    setText('')
-    setBusy(false)
+    setPasteBusy(true)
+    try {
+      const res = await post('/resolve', { text })
+      setItems(cur => [...cur, ...res.map((r, i) => ({
+        id: `paste:${Date.now()}:${i}`, label: r.raw, image: null, qty: r.qty,
+        status: r.status, options: r.options, pick: r.status === 'ok' ? r.options[0] : '',
+      }))])
+      setText('')
+    } finally {
+      setPasteBusy(false)
+    }
   }
 
-  const update = (id, patch) => setItems(items.map(i => (i.id === id ? { ...i, ...patch } : i)))
-  const remove = id => setItems(items.filter(i => i.id !== id))
+  const update = (id, patch) => setItems(cur => cur.map(i => (i.id === id ? { ...i, ...patch } : i)))
+  const remove = id => setItems(cur => cur.filter(i => i.id !== id))
 
   const ready = items.filter(i => i.pick)
-  const lines = ready.map(i => `${i.qty} ${i.pick}`)
+  const lines = ready.map(i => `${qtyOf(i)} ${i.pick}`)
+  const totalCopies = ready.reduce((s, i) => s + qtyOf(i), 0)
   const skipped = items.filter(i => !i.pick)
   const running = ['starting', 'waiting_login', 'running'].includes(job.status)
-  const tooMany = lines.length > MAX
+  const tooMany = lines.length > MAX_ENTRIES
+  const nameOk = LIST_NAME_RE.test(listName.trim())
+  const nameTouched = listName.length > 0
+
+  let blocker = ''
+  if (!lines.length) blocker = 'Add at least one card.'
+  else if (tooMany) blocker = `Maximum ${MAX_ENTRIES} different cards per run.`
+  else if (!nameOk) blocker = 'Enter a list name.'
+  const canSend = !running && !blocker
 
   return (
-    <main>
+    <>
       {job.status === 'waiting_login' && (
-        <div className="banner">
-          <span>Log in to Cardmarket in the Chrome window that opened (pass the Cloudflare check). When you see you are logged in, click:</span>
-          <button className="primary" onClick={() => post('/logged-in')}>I'm logged in — continue</button>
+        <div className="banner" role="alert">
+          <div>
+            <strong>Log in to Cardmarket</strong>
+            <span>Use the Chrome window that just opened and pass the Cloudflare check. Then continue here.</span>
+          </div>
+          <button className="btn primary" onClick={() => post('/logged-in')}>I'm logged in — continue</button>
         </div>
       )}
-      <h1>Cardmarket Wants List Uploader</h1>
 
-      <section className="panel">
-        <h2>1. Search a card</h2>
-        <div className="search" ref={boxRef}>
-          <input
-            placeholder="Type a name, e.g. “charizard 151” or “gengar fossil”"
-            value={query}
-            onChange={e => setQuery(e.target.value)}
-            onFocus={() => results.length && setOpen(true)}
-          />
-          {open && results.length > 0 && (
-            <ul className="dropdown">
-              {results.map(c => (
-                <li key={c.id} onClick={() => addCard(c)}>
-                  {c.image ? <img src={c.image} alt="" /> : <div className="thumb" />}
-                  <span><strong>{c.name}</strong><br /><small>{c.setName} · #{c.number}</small></span>
+      <main>
+        <header className="hero">
+          <h1>Wants List Uploader</h1>
+          <p>Find cards, pick the exact printing, and add them all to a Cardmarket wants list in one go.</p>
+        </header>
+
+        <section className="card-panel">
+          <h2><span className="step">1</span>Find cards</h2>
+          <CardSearch onPick={addCard} error={addError} />
+          <details className="paste">
+            <summary>Paste a list of names instead</summary>
+            <textarea
+              rows={5}
+              value={text}
+              onChange={e => setText(e.target.value)}
+              placeholder={'Umbreon ex\n2x Scoop Up Net\nGengar Fossil'}
+              aria-label="Card names, one per line"
+            />
+            <div className="paste-actions">
+              <span className="hint">One per line. Start with an amount like <code>2x</code> if you need more than one.</span>
+              <button className="btn" disabled={pasteBusy || !text.trim()} onClick={matchPasted}>
+                {pasteBusy ? <><Spinner /> Matching…</> : 'Add names'}
+              </button>
+            </div>
+          </details>
+        </section>
+
+        <section className="card-panel">
+          <h2>
+            <span className="step">2</span>Your cards
+            <span className="counter" aria-live="polite">{lines.length} cards · {totalCopies} copies</span>
+          </h2>
+          {items.length === 0 ? (
+            <div className="empty">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="3" width="14" height="18" rx="2" /><path d="M9 8h6M9 12h6" /></svg>
+              <p>No cards yet</p>
+              <span>Search above and click a result to add it.</span>
+            </div>
+          ) : (
+            <ul className="cards">
+              {items.map(i => (
+                <li key={i.id} className={`row ${i.status !== 'ok' && !i.pick ? 'attention' : ''}`}>
+                  {i.image ? <img src={i.image} alt="" loading="lazy" /> : <div className="thumb" />}
+                  <div className="row-main">
+                    <div className="row-title">
+                      <strong>{i.label}</strong>
+                      {i.setName && <span className="chip">{i.setName} #{i.number}</span>}
+                    </div>
+                    {i.status === 'not_found' && <span className="msg error">Not found — it will be skipped</span>}
+                    {i.status === 'ambiguous' && (
+                      <select value={i.pick} onChange={e => update(i.id, { pick: e.target.value })} aria-label={`Version of ${i.label}`}>
+                        <option value="">Choose a version…</option>
+                        {i.options.map(o => <option key={o} value={o}>{o}</option>)}
+                      </select>
+                    )}
+                    {i.pick && <code className="line">{i.pick}</code>}
+                  </div>
+                  <QtyStepper value={i.qty} onChange={v => update(i.id, { qty: v })} />
+                  <button className="icon-btn" onClick={() => remove(i.id)} aria-label={`Remove ${i.label}`}>
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg>
+                  </button>
                 </li>
               ))}
             </ul>
           )}
-          {open && query.trim().length >= 2 && results.length === 0 && <div className="dropdown empty">No cards found</div>}
-        </div>
-        {addError && <p className="bad">{addError}</p>}
-        <details>
-          <summary>Or paste a list of names</summary>
-          <textarea rows={6} value={text} onChange={e => setText(e.target.value)} placeholder={'Umbreon ex\n2x Scoop Up Net\nMunkidori'} />
-          <button className="primary" disabled={busy || !text.trim()} onClick={matchPasted}>
-            {busy ? 'Matching…' : 'Add pasted names'}
-          </button>
-        </details>
-      </section>
+          {tooMany && <p className="msg error">Over the limit of {MAX_ENTRIES} different cards.</p>}
+        </section>
 
-      <section className="panel">
-        <h2>2. Your cards ({lines.length}/{MAX})</h2>
-        {items.length === 0 && <p className="hint">Nothing yet. Search above and click a card to add it.</p>}
-        <table>
-          <tbody>
-            {items.map(i => (
-              <tr key={i.id} className={i.status}>
-                <td className="img">{i.image && <img src={i.image} alt="" />}</td>
-                <td>
-                  <div>{i.label}</div>
-                  {i.status === 'ok' && <small><code>{i.pick}</code></small>}
-                  {i.status === 'not_found' && <em>Not found — will be skipped</em>}
-                  {i.status === 'ambiguous' && (
-                    <select value={i.pick} onChange={e => update(i.id, { pick: e.target.value })}>
-                      <option value="">Choose a version…</option>
-                      {i.options.map(o => <option key={o} value={o}>{o}</option>)}
-                    </select>
-                  )}
-                </td>
-                <td className="qty">
-                  <input type="number" min="1" value={i.qty} onChange={e => update(i.id, { qty: Math.max(1, +e.target.value || 1) })} />
-                </td>
-                <td><button onClick={() => remove(i.id)} aria-label="Remove">✕</button></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {tooMany && <p className="bad">Over the {MAX} limit.</p>}
-      </section>
-
-      <section className="panel">
-        <h2>3. Send to Cardmarket</h2>
-        <div className="row">
-          <input placeholder="Wants list name (created if missing)" value={listName} onChange={e => setListName(e.target.value)} />
-          <button className="primary" disabled={running || !lines.length || tooMany || !listName.trim()}
-            onClick={() => post('/start', { lines, list: listName.trim() })}>
-            Add {lines.length} cards
-          </button>
-        </div>
-        {running && job.status !== 'waiting_login' && <p>Working… ({job.status})</p>}
-        {job.status === 'error' && <p className="bad">Error: {job.error}. Screenshots saved in <code>debug/</code>.</p>}
-        {job.result && (
-          <div>
-            <h3>{job.result.added.length} added, {job.result.not_added.length} not added{' '}
-              <button onClick={startNewBatchIfDone}>Clear result</button></h3>
-            {job.result.not_added.length > 0 && <ul>{job.result.not_added.map(l => <li key={l}>{l}</li>)}</ul>}
-            <pre>{job.result.messages.join('\n')}</pre>
+        <section className="card-panel">
+          <h2><span className="step">3</span>Send to Cardmarket</h2>
+          <div className="send">
+            <div className="field">
+              <label htmlFor="listname">Wants list name</label>
+              <input
+                id="listname"
+                value={listName}
+                maxLength={30}
+                onChange={e => setListName(e.target.value)}
+                placeholder="e.g. 151 Collection"
+                aria-invalid={nameTouched && !nameOk}
+                disabled={running}
+              />
+              <span className={`hint ${nameTouched && !nameOk ? 'error' : ''}`}>
+                Created if it doesn't exist. Letters, numbers, spaces and hyphens only · {listName.length}/30
+              </span>
+            </div>
+            <button
+              className="btn primary big"
+              disabled={!canSend}
+              onClick={() => { startNewBatchIfDone(); post('/start', { lines, list: listName.trim() }) }}
+            >
+              {running ? <><Spinner /> Working…</> : `Add ${lines.length} ${lines.length === 1 ? 'card' : 'cards'}`}
+            </button>
           </div>
-        )}
-        {skipped.length > 0 && <p className="hint">Not sent (no version chosen / not found): {skipped.map(s => s.label).join(', ')}</p>}
-      </section>
-    </main>
+          {blocker && !running && <p className="hint">{blocker}</p>}
+          {skipped.length > 0 && (
+            <p className="msg warn">Won't be sent (no version chosen or not found): {skipped.map(s => s.label).join(', ')}</p>
+          )}
+
+          <Progress status={job.status} />
+          {job.status === 'error' && (
+            <p className="msg error" role="alert">
+              Something went wrong: {job.error}. A screenshot was saved in the <code>debug</code> folder.
+            </p>
+          )}
+
+          {job.result && (
+            <div className="result">
+              <div className="stats">
+                <div className="stat ok"><b>{job.result.added.length}</b><span>added</span></div>
+                <div className={`stat ${job.result.not_added.length ? 'bad' : ''}`}><b>{job.result.not_added.length}</b><span>not added</span></div>
+                <button className="btn" onClick={startNewBatchIfDone}>Clear result</button>
+              </div>
+              {job.result.not_added.length > 0 && (
+                <>
+                  <h3>Not added</h3>
+                  <ul className="plain">{job.result.not_added.map(l => <li key={l}><code>{l}</code></li>)}</ul>
+                </>
+              )}
+              <details>
+                <summary>What Cardmarket said</summary>
+                <pre>{job.result.messages.join('\n\n')}</pre>
+              </details>
+            </div>
+          )}
+        </section>
+      </main>
+    </>
   )
 }
