@@ -68,6 +68,14 @@ def logged_in():
     return jsonify(ok=True)
 
 
+@app.post("/api/reset")
+def reset():
+    if state["status"] in ("starting", "waiting_login", "running"):
+        return jsonify(error="a run is in progress"), 409
+    state.update(status="idle", result=None, error=None)
+    return jsonify(ok=True)
+
+
 @app.get("/api/status")
 def status():
     return jsonify(state)

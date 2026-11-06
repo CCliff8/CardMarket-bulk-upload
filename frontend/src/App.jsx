@@ -55,7 +55,15 @@ export default function App() {
     return () => document.removeEventListener('mousedown', close)
   }, [])
 
+  const startNewBatchIfDone = () => {
+    if (job.status === 'finished' || job.status === 'error') {
+      post('/reset')
+      setJob({ status: 'idle', result: null, error: null })
+    }
+  }
+
   const addCard = async c => {
+    startNewBatchIfDone()
     const key = `card:${c.id}`
     setOpen(false)
     setQuery('')
@@ -80,6 +88,7 @@ export default function App() {
   }
 
   const matchPasted = async () => {
+    startNewBatchIfDone()
     setBusy(true)
     const res = await post('/resolve', { text })
     setItems(cur => [...cur, ...res.map((r, i) => ({
@@ -183,7 +192,8 @@ export default function App() {
         {job.status === 'error' && <p className="bad">Error: {job.error}. Screenshots saved in <code>debug/</code>.</p>}
         {job.result && (
           <div>
-            <h3>{job.result.added.length} added, {job.result.not_added.length} not added</h3>
+            <h3>{job.result.added.length} added, {job.result.not_added.length} not added{' '}
+              <button onClick={startNewBatchIfDone}>Clear result</button></h3>
             {job.result.not_added.length > 0 && <ul>{job.result.not_added.map(l => <li key={l}>{l}</li>)}</ul>}
             <pre>{job.result.messages.join('\n')}</pre>
           </div>
