@@ -1,6 +1,6 @@
 # Cardmarket Wants List Uploader
 
-Paste card names -> they are matched on TCGdex and converted to the lines Cardmarket's
+Paste card names -> they are matched against Cardmarket's own public product catalogue (cached in `data/`, refreshed daily; TCGdex is only used to resolve set names) and converted to the lines Cardmarket's
 "Add Deck List" box needs (`<qty> <name> <ability/attack names>`) -> a browser you log in to
 creates/opens a Wants list and pastes them -> you get a summary of added / not added.
 

@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Paste card names -> build Cardmarket deck-list lines -> add them to a Wants list (Playwright)."""
 import argparse
+import json
 import re
 import socket
 import subprocess
 import sys
 import time
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -18,6 +20,10 @@ DEBUG = HERE / "debug"
 WANTS_URL = "https://www.cardmarket.com/en/Pokemon/Wants"
 MAX_ENTRIES = 150
 MAX_CANDIDATES = 40
+CATALOG_URL = "https://downloads.s3.cardmarket.com/productCatalog/productList/products_singles_6.json"
+CATALOG_FILE = HERE / "data" / "products_singles_6.json"
+CATALOG_MAX_AGE = 24 * 3600
+_catalog = None
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 CDP_PORT = 9222
 
@@ -57,35 +63,71 @@ def cm_text(card):
     return " ".join(parts)
 
 
-def _fetch_details(brief, limit):
+def _norm(text):
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
+    return re.sub(r"\s+", " ", text).strip().lower()
+
+
+def _line_text(product_name):
+    """Cardmarket product name 'Gengar [Curse | Dark Mind]' -> deck-list text 'Gengar Curse Dark Mind'."""
+    return re.sub(r"\s+", " ", re.sub(r"[\[\]|]", " ", product_name)).strip()
+
+
+def load_catalog():
+    """Cardmarket's own public product catalogue (all Pokémon singles), cached for a day."""
+    global _catalog
+    if _catalog is None:
+        if not CATALOG_FILE.exists() or time.time() - CATALOG_FILE.stat().st_mtime > CATALOG_MAX_AGE:
+            CATALOG_FILE.parent.mkdir(exist_ok=True)
+            r = requests.get(CATALOG_URL, timeout=120)
+            r.raise_for_status()
+            CATALOG_FILE.write_bytes(r.content)
+        products = json.loads(CATALOG_FILE.read_text())["products"]
+        by_id, by_name = {}, {}
+        for p in products:
+            by_id[p["idProduct"]] = p
+            base = p["name"].split(" [")[0]
+            by_name.setdefault(_norm(base), {}).setdefault(p["idMetacard"], p["name"])
+        _catalog = {"by_id": by_id, "by_name": by_name}
+    return _catalog
+
+
+def _result(options):
+    options = list(dict.fromkeys(options))
+    return {"status": "ok" if len(options) == 1 else "ambiguous", "options": options}
+
+
+def _tcgdex_candidates(card_name, hint):
+    brief = requests.get(f"{API}/cards", params={"name": f"eq:{card_name}"}, timeout=30).json()
+    if not isinstance(brief, list) or not brief:
+        return []
     with ThreadPoolExecutor(12) as ex:
-        return list(ex.map(lambda c: requests.get(f"{API}/cards/{c['id']}", timeout=30).json(), brief[:limit]))
-
-
-def _by_name(name):
-    brief = requests.get(f"{API}/cards", params={"name": f"eq:{name}"}, timeout=30).json()
-    return brief if isinstance(brief, list) else []
+        details = list(ex.map(lambda c: requests.get(f"{API}/cards/{c['id']}", timeout=30).json(), brief[:1000]))
+    return [d for d in details if hint in d.get("set", {}).get("name", "").lower()
+            or hint == d.get("set", {}).get("id", "").lower()]
 
 
 def resolve_name(name):
-    """Returns {'status': ok|ambiguous|not_found, 'options': [cardmarket text, ...]}.
-    Accepts a trailing set name/id too: 'Gengar Fossil', 'Gengar (Fossil)', 'Gengar base3'."""
+    """Returns {'status': ok|ambiguous|not_found, 'options': [deck-list text, ...]}.
+    Looks the name up in Cardmarket's own catalogue. A trailing set name or id ('Gengar Fossil',
+    'Gengar (Fossil)', 'Gengar base3') is resolved through TCGdex, which knows the sets."""
+    cat = load_catalog()
     name = re.sub(r"[()\[\]]", " ", name).strip()
     words = name.split()
-    # Try the whole text as a card name first, then shorter names with the rest as a set hint.
     for k in range(len(words), 0, -1):
         card_name, hint = " ".join(words[:k]), " ".join(words[k:]).lower()
-        brief = _by_name(card_name)
-        if not brief:
+        if not hint:
+            found = cat["by_name"].get(_norm(card_name))
+            if found:
+                return _result(_line_text(n) for n in found.values())
             continue
-        details = _fetch_details(brief, 1000 if hint else MAX_CANDIDATES)
-        if hint:
-            details = [d for d in details if hint in d.get("set", {}).get("name", "").lower()
-                       or hint == d.get("set", {}).get("id", "").lower()]
-            if not details:
-                continue
-        options = list(dict.fromkeys(cm_text(d) for d in details))
-        return {"status": "ok" if len(options) == 1 else "ambiguous", "options": options}
+        options = []
+        for d in _tcgdex_candidates(card_name, hint):
+            pid = (d.get("pricing") or {}).get("cardmarket", {}).get("idProduct")
+            prod = cat["by_id"].get(pid)
+            options.append(_line_text(prod["name"]) if prod else cm_text(d))
+        if options:
+            return _result(options)
     return {"status": "not_found", "options": []}
 
 
