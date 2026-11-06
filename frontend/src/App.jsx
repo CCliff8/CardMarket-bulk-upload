@@ -90,6 +90,12 @@ export default function App() {
 
   return (
     <main>
+      {job.status === 'waiting_login' && (
+        <div className="banner">
+          <span>Log in to Cardmarket in the Chrome window that opened (pass the Cloudflare check). When you see you are logged in, click:</span>
+          <button className="primary" onClick={() => post('/logged-in')}>I'm logged in — continue</button>
+        </div>
+      )}
       <h1>Cardmarket Wants List Uploader</h1>
 
       <section className="panel">
@@ -162,10 +168,6 @@ export default function App() {
             Add {lines.length} cards
           </button>
         </div>
-        {job.status === 'waiting_login' && (
-          <p>Log in to Cardmarket in the Chrome window, then{' '}
-            <button className="primary" onClick={() => post('/logged-in')}>I'm logged in</button></p>
-        )}
         {running && job.status !== 'waiting_login' && <p>Working… ({job.status})</p>}
         {job.status === 'error' && <p className="bad">Error: {job.error}. Screenshots saved in <code>debug/</code>.</p>}
         {job.result && (

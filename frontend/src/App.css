@@ -28,3 +28,6 @@ td.img img { width: 44px; display: block; }
 td.qty input { width: 56px; }
 details { margin-top: 8px; }
 summary { cursor: pointer; color: #2563eb; margin-bottom: 8px; }
+
+.banner { position: sticky; top: 0; z-index: 20; display: flex; gap: 12px; align-items: center; justify-content: space-between; background: #fff3cd; border: 2px solid #e0a800; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; font-weight: 600; }
+.banner button { white-space: nowrap; padding: 12px 18px; }
