@@ -14,6 +14,36 @@ const post = (path, body) =>
 
 const qtyOf = i => Math.min(MAX_QTY, Math.max(1, parseInt(i.qty, 10) || 1))
 
+const THEMES = [
+  ['system', 'System theme', <path key="s" d="M4 5h16v11H4zM9 20h6M12 16v4" />],
+  ['light', 'Light theme', <g key="l"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></g>],
+  ['dark', 'Dark theme', <path key="d" d="M21 13A9 9 0 1 1 11 3a7 7 0 0 0 10 10z" />],
+]
+
+function ThemeSwitch() {
+  const [theme, setTheme] = useState(() => {
+    try { return localStorage.getItem('theme') || 'system' } catch { return 'system' }
+  })
+  const choose = t => {
+    setTheme(t)
+    if (t === 'system') document.documentElement.removeAttribute('data-theme')
+    else document.documentElement.setAttribute('data-theme', t)
+    try {
+      if (t === 'system') localStorage.removeItem('theme')
+      else localStorage.setItem('theme', t)
+    } catch { /* storage unavailable */ }
+  }
+  return (
+    <div className="theme" role="group" aria-label="Color theme">
+      {THEMES.map(([key, label, icon]) => (
+        <button key={key} type="button" aria-pressed={theme === key} aria-label={label} title={label} onClick={() => choose(key)}>
+          <svg viewBox="0 0 24 24" aria-hidden="true">{icon}</svg>
+        </button>
+      ))}
+    </div>
+  )
+}
+
 function Spinner() {
   return <span className="spinner" role="status" aria-label="Loading" />
 }
@@ -252,8 +282,11 @@ export default function App() {
 
       <main>
         <header className="hero">
-          <h1>Wants List Uploader</h1>
-          <p>Find cards, pick the exact printing, and add them all to a Cardmarket wants list in one go.</p>
+          <div>
+            <h1>Wants List Uploader</h1>
+            <p>Find cards, pick the exact printing, and add them all to a Cardmarket wants list in one go.</p>
+          </div>
+          <ThemeSwitch />
         </header>
 
         <section className="card-panel">
