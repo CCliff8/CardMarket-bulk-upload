@@ -1,9 +1,30 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { Fragment, useEffect, useId, useRef, useState } from 'react'
 
 const API = 'http://127.0.0.1:5001/api'
 const MAX_ENTRIES = 150
 const MAX_QTY = 999
 const LIST_NAME_RE = /^[A-Za-z0-9 -]{1,30}$/
+
+const CONDITIONS = [['1', 'Mint (MT)'], ['2', 'Near Mint (NM)'], ['3', 'Excellent (EX)'], ['4', 'Good (GD)'],
+  ['5', 'Light Played (LP)'], ['6', 'Played (PL)'], ['7', 'Poor (PO)']]
+const LANGS = [['1', 'English'], ['2', 'French'], ['3', 'German'], ['4', 'Spanish'], ['5', 'Italian'],
+  ['6', 'S-Chinese'], ['7', 'Japanese'], ['8', 'Portuguese'], ['9', 'Russian'], ['10', 'Korean'],
+  ['11', 'T-Chinese'], ['12', 'Dutch'], ['13', 'Polish'], ['14', 'Czech'], ['15', 'Hungarian'],
+  ['16', 'Indonesian'], ['17', 'Thai']]
+const TRI = [['isReverseHolo', 'Reverse Holo'], ['isFirstEd', 'First Edition'], ['isSigned', 'Signed'], ['isAltered', 'Altered']]
+const EMPTY_DETAILS = { minCondition: '', languages: [], isReverseHolo: '', isFirstEd: '', isSigned: '', isAltered: '' }
+
+// a card's own details win; anything it leaves empty falls back to the "all cards" details
+const effective = (own, defaults) => ({
+  minCondition: own.minCondition || defaults.minCondition,
+  languages: own.languages.length ? own.languages : defaults.languages,
+  ...Object.fromEntries(TRI.map(([k]) => [k, own[k] || defaults[k]])),
+})
+const summarize = d => [
+  d.minCondition && CONDITIONS.find(c => c[0] === d.minCondition)?.[1].match(/\((\w+)\)/)?.[1],
+  d.languages.length && d.languages.map(l => LANGS.find(x => x[0] === l)?.[1]).join('/'),
+  ...TRI.map(([k, label]) => d[k] && `${label}: ${d[k] === 'Y' ? 'yes' : 'no'}`),
+].filter(Boolean)
 
 const post = (path, body) =>
   fetch(`${API}${path}`, {
@@ -39,6 +60,42 @@ function ThemeSwitch() {
         <button key={key} type="button" aria-pressed={theme === key} aria-label={label} title={label} onClick={() => choose(key)}>
           <svg viewBox="0 0 24 24" aria-hidden="true">{icon}</svg>
         </button>
+      ))}
+    </div>
+  )
+}
+
+function DetailFields({ value, onChange, blank }) {
+  const set = patch => onChange({ ...value, ...patch })
+  const toggleLang = id =>
+    set({ languages: value.languages.includes(id) ? value.languages.filter(l => l !== id) : [...value.languages, id] })
+  return (
+    <div className="detail-grid">
+      <label>Minimum condition
+        <select value={value.minCondition} onChange={e => set({ minCondition: e.target.value })}>
+          <option value="">{blank}</option>
+          {CONDITIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+        </select>
+      </label>
+      <div className="lang">
+        <span>Language</span>
+        <details className="langpick">
+          <summary>{value.languages.length ? value.languages.map(l => LANGS.find(x => x[0] === l)[1]).join(', ') : blank}</summary>
+          <div className="langlist">
+            {LANGS.map(([v, l]) => (
+              <label key={v}><input type="checkbox" checked={value.languages.includes(v)} onChange={() => toggleLang(v)} />{l}</label>
+            ))}
+          </div>
+        </details>
+      </div>
+      {TRI.map(([k, label]) => (
+        <label key={k}>{label}
+          <select value={value[k]} onChange={e => set({ [k]: e.target.value })}>
+            <option value="">{blank}</option>
+            <option value="Y">Yes</option>
+            <option value="N">No</option>
+          </select>
+        </label>
       ))}
     </div>
   )
@@ -188,6 +245,7 @@ export default function App() {
   const [pasteBusy, setPasteBusy] = useState(false)
   const [addError, setAddError] = useState('')
   const [listName, setListName] = useState('')
+  const [defaults, setDefaults] = useState(EMPTY_DETAILS)
   const [job, setJob] = useState({ status: 'idle', result: null, error: null })
 
   useEffect(() => {
@@ -224,11 +282,12 @@ export default function App() {
     try {
       const r = await fetch(`${API}/card-line/${c.id}`)
       if (!r.ok) throw new Error(`server error ${r.status}`)
-      const { text: line } = await r.json()
+      const { text: line, product } = await r.json()
       setAddError('')
       setItems(cur => [...cur, {
         id: key, label: c.name, setName: c.setName, number: c.number, image: c.image,
-        qty: 1, status: 'ok', options: [line], pick: line,
+        qty: 1, status: 'ok', options: [line], products: { [line]: product }, pick: line,
+        details: EMPTY_DETAILS, open: false,
       }])
     } catch (e) {
       setAddError(`Could not add ${c.name} (${c.setName} #${c.number}): ${e.message}`)
@@ -255,6 +314,10 @@ export default function App() {
 
   const ready = items.filter(i => i.pick)
   const lines = ready.map(i => `${qtyOf(i)} ${i.pick}`)
+  const entries = ready.map(i => ({
+    line: `${qtyOf(i)} ${i.pick}`, product: i.products?.[i.pick] ?? null, details: effective(i.details, defaults),
+  }))
+  const defaultsSummary = summarize(defaults)
   const totalCopies = ready.reduce((s, i) => s + qtyOf(i), 0)
   const skipped = items.filter(i => !i.pick)
   const running = ['starting', 'waiting_login', 'running'].includes(job.status)
@@ -315,6 +378,14 @@ export default function App() {
             <span className="step">2</span>Your cards
             <span className="counter" aria-live="polite">{lines.length} cards · {totalCopies} copies</span>
           </h2>
+          <details className="defaults">
+            <summary>
+              Details for all cards <span className="optional">optional</span>
+              {defaultsSummary.length > 0 && <span className="chips">{defaultsSummary.map(s => <span key={s} className="chip on">{s}</span>)}</span>}
+            </summary>
+            <p className="hint">Condition, language and more, applied to every card below. You can override them per card.</p>
+            <DetailFields value={defaults} onChange={setDefaults} blank="No change" />
+          </details>
           {items.length === 0 ? (
             <div className="empty">
               <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="3" width="14" height="18" rx="2" /><path d="M9 8h6M9 12h6" /></svg>
@@ -323,8 +394,12 @@ export default function App() {
             </div>
           ) : (
             <ul className="cards">
-              {items.map(i => (
-                <li key={i.id} className={`row ${i.status !== 'ok' && !i.pick ? 'attention' : ''}`}>
+              {items.map(i => {
+                const eff = effective(i.details, defaults)
+                const tags = summarize(eff)
+                return (
+                <Fragment key={i.id}>
+                <li className={`row ${i.status !== 'ok' && !i.pick ? 'attention' : ''}`}>
                   {i.image ? <img src={i.image} alt="" loading="lazy" /> : <div className="thumb" />}
                   <div className="row-main">
                     <div className="row-title">
@@ -339,13 +414,28 @@ export default function App() {
                       </select>
                     )}
                     {i.pick && <code className="line">{i.pick}</code>}
+                    {i.pick && (
+                      <div className="row-tags">
+                        {tags.map(s => <span key={s} className="chip on">{s}</span>)}
+                        <button type="button" className="link" aria-expanded={i.open} onClick={() => update(i.id, { open: !i.open })}>
+                          {i.open ? 'Hide details' : tags.length ? 'Edit details' : 'Add details'}
+                        </button>
+                      </div>
+                    )}
                   </div>
                   <QtyStepper value={i.qty} onChange={v => update(i.id, { qty: v })} />
                   <button className="icon-btn" onClick={() => remove(i.id)} aria-label={`Remove ${i.label}`}>
                     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg>
                   </button>
                 </li>
-              ))}
+                {i.open && i.pick && (
+                  <li className="row-details">
+                    <DetailFields value={i.details} onChange={d => update(i.id, { details: d })} blank={defaultsSummary.length ? 'Same as all cards' : 'No change'} />
+                  </li>
+                )}
+                </Fragment>
+                )
+              })}
             </ul>
           )}
           {tooMany && <p className="msg error">Over the limit of {MAX_ENTRIES} different cards.</p>}
@@ -372,7 +462,7 @@ export default function App() {
             <button
               className="btn primary big"
               disabled={!canSend}
-              onClick={() => { startNewBatchIfDone(); post('/start', { lines, list: listName.trim() }) }}
+              onClick={() => { startNewBatchIfDone(); post('/start', { entries, list: listName.trim() }) }}
             >
               {running ? <><Spinner /> Working…</> : `Add ${lines.length} ${lines.length === 1 ? 'card' : 'cards'}`}
             </button>
@@ -400,6 +490,15 @@ export default function App() {
                 <>
                   <h3>Not added</h3>
                   <ul className="plain">{job.result.not_added.map(l => <li key={l}><code>{l}</code></li>)}</ul>
+                </>
+              )}
+              {(job.result.details_applied?.length > 0 || job.result.details_failed?.length > 0) && (
+                <>
+                  <h3>Card details</h3>
+                  <p className="hint">Applied to {job.result.details_applied.length} {job.result.details_applied.length === 1 ? 'card' : 'cards'}.</p>
+                  {job.result.details_failed.length > 0 && (
+                    <ul className="plain">{job.result.details_failed.map(x => <li key={x.line}><code>{x.line}</code> — not applied: {x.reason}</li>)}</ul>
+                  )}
                 </>
               )}
               <details>

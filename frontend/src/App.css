@@ -220,3 +220,23 @@ textarea { resize: vertical; }
 .theme button:hover { color: var(--text); }
 .theme button[aria-pressed=true] { background: var(--primary-soft); color: var(--primary); }
 .theme svg { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+.defaults { margin-bottom: 14px; padding: 10px 12px; border: 1px dashed var(--border); border-radius: 12px; }
+.defaults summary { cursor: pointer; font-weight: 600; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.defaults .hint { margin: 8px 0 10px; }
+.optional { font-weight: 500; font-size: 12px; color: var(--muted); }
+.chips { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+.chip.on { background: var(--primary-soft); border-color: transparent; color: var(--primary); }
+.row-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.link { border: 0; background: none; padding: 0; color: var(--primary); font-size: 13px; font-weight: 600; cursor: pointer; }
+.link:hover { text-decoration: underline; }
+.row-details { margin: -4px 0 0; padding: 12px; border: 1px solid var(--border); border-top: 0; border-radius: 0 0 12px 12px; background: var(--surface-2); }
+.detail-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px 12px; }
+.detail-grid label, .detail-grid .lang { display: grid; gap: 4px; font-size: 13px; font-weight: 600; }
+.detail-grid select { padding: 8px 10px; font-weight: 400; }
+.langpick { position: relative; }
+.langpick summary { list-style: none; padding: 8px 10px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; font-weight: 400; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
+.langlist { position: absolute; z-index: 15; top: calc(100% + 4px); left: 0; min-width: 190px; max-height: 260px; overflow: auto; padding: 8px; display: grid; gap: 2px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 12px 30px rgba(0,0,0,.2); }
+.langlist label { display: flex; align-items: center; gap: 8px; font-weight: 400; padding: 3px 4px; border-radius: 6px; cursor: pointer; }
+.langlist label:hover { background: var(--primary-soft); }
+.langlist input { width: auto; }

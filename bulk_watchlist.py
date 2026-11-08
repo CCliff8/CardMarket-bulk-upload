@@ -97,9 +97,13 @@ def load_catalog():
     return _catalog
 
 
-def _result(options):
-    options = list(dict.fromkeys(options))
-    return {"status": "ok" if len(options) == 1 else "ambiguous", "options": options}
+def _result(pairs):
+    """pairs: (deck-list text, Cardmarket product name or None). `products` maps text -> product name."""
+    products = {}
+    for text, product in pairs:
+        products.setdefault(text, product)
+    options = list(products)
+    return {"status": "ok" if len(options) == 1 else "ambiguous", "options": options, "products": products}
 
 
 def _tcgdex_candidates(card_name, hint):
@@ -124,16 +128,16 @@ def resolve_name(name):
         if not hint:
             found = cat["by_name"].get(_norm(card_name))
             if found:
-                return _result(_line_text(n) for n in found.values())
+                return _result((_line_text(n), n) for n in found.values())
             continue
         options = []
         for d in _tcgdex_candidates(card_name, hint):
             pid = _cm_product_id(d)
             prod = cat["by_id"].get(pid)
-            options.append(_line_text(prod["name"]) if prod else cm_text(d))
+            options.append((_line_text(prod["name"]), prod["name"]) if prod else (cm_text(d), None))
         if options:
             return _result(options)
-    return {"status": "not_found", "options": []}
+    return {"status": "not_found", "options": [], "products": {}}
 
 
 _sets = None
@@ -169,12 +173,13 @@ def search_cards(query, limit=30):
     return out[:limit]
 
 
-def card_line_text(card_id):
-    """Deck-list text for one specific printing, taken from Cardmarket's catalogue via its product id."""
+def card_line(card_id):
+    """Deck-list text (and Cardmarket product name) for one specific printing, via its product id."""
     d = requests.get(f"{API}/cards/{card_id}", timeout=30).json()
-    pid = _cm_product_id(d)
-    prod = load_catalog()["by_id"].get(pid)
-    return _line_text(prod["name"]) if prod else cm_text(d)
+    prod = load_catalog()["by_id"].get(_cm_product_id(d))
+    if prod:
+        return {"text": _line_text(prod["name"]), "product": prod["name"]}
+    return {"text": cm_text(d), "product": None}
 
 
 def resolve_text(text):
@@ -186,7 +191,8 @@ def resolve_text(text):
         line = None
         if r["status"] == "ok":
             line = f"{qty} {r['options'][0]}"
-        items.append({"raw": raw, "qty": qty, "name": name, **r, "line": line})
+        items.append({"raw": raw, "qty": qty, "name": name, **r, "line": line,
+                      "product": r["products"].get(r["options"][0]) if r["status"] == "ok" else None})
     return items
 
 
@@ -217,9 +223,94 @@ def open_or_create_list(page, list_name):
     page.goto("https://www.cardmarket.com" + href, wait_until="domcontentloaded")
 
 
-def add_decklist(page, list_name, lines):
-    """Pastes `lines` into the list's Add Deck List page. Returns the result dict."""
+# Card details Cardmarket lets you set on a wants entry (Bulk modification form field names).
+TRI_FIELDS = ("isReverseHolo", "isFirstEd", "isSigned", "isAltered")  # values 'Y' / 'N'
+CONDITIONS = {"MT": "1", "NM": "2", "EX": "3", "GD": "4", "LP": "5", "PL": "6", "PO": "7"}
+LANGUAGES = {"1": "English", "2": "French", "3": "German", "4": "Spanish", "5": "Italian", "6": "S-Chinese",
+             "7": "Japanese", "8": "Portuguese", "9": "Russian", "10": "Korean", "11": "T-Chinese",
+             "12": "Dutch", "13": "Polish", "14": "Czech", "15": "Hungarian", "16": "Indonesian", "17": "Thai"}
+
+
+def clean_details(d):
+    """Keep only valid, non-empty details. Empty means 'leave as it is'."""
+    d = d or {}
+    out = {}
+    if str(d.get("minCondition", "")) in CONDITIONS.values():
+        out["minCondition"] = str(d["minCondition"])
+    langs = [str(x) for x in d.get("languages") or [] if str(x) in LANGUAGES]
+    if langs:
+        out["languages"] = langs
+    for f in TRI_FIELDS:
+        if d.get(f) in ("Y", "N"):
+            out[f] = d[f]
+    return out
+
+
+def _rowkey(text):
+    return re.sub(r"[^a-z0-9]", "", _norm(text))
+
+
+def _row_ids(page):
+    return {c.get_attribute("data-id-want") for c in page.locator('input[name="checkWantsRow[]"]').all()}
+
+
+def apply_details(page, list_url, before_ids, entries):
+    """Sets condition/language/etc. on the rows added by this run, using the list's Bulk modification form.
+    Entries with identical details are changed together. Returns (applied, failed)."""
+    groups = {}
+    for e in entries:
+        d = clean_details(e.get("details"))
+        if d:
+            groups.setdefault(json.dumps(d, sort_keys=True), (d, []))[1].append(e)
+    applied, failed = [], []
+    for d, group in groups.values():
+        wanted = {}
+        for e in group:
+            if e.get("product"):
+                wanted.setdefault(_rowkey(e["product"]), []).append(e)
+            else:
+                failed.append({"line": e["line"], "reason": "unknown Cardmarket product name"})
+        if not wanted:
+            continue
+        page.goto(list_url, wait_until="domcontentloaded")
+        page.get_by_text("Bulk modification").first.click()
+        ticked = set()
+        for row in page.locator("tr[role=row]").all():
+            box = row.locator('input[name="checkWantsRow[]"]')
+            if not box.count() or box.get_attribute("data-id-want") in before_ids:
+                continue
+            key = _rowkey(row.locator("td.name a").first.inner_text())
+            if key in wanted:
+                box.check()
+                ticked.add(key)
+        for key, es in wanted.items():
+            if key not in ticked:
+                failed += [{"line": e["line"], "reason": "not a new row in the list (already there?)"} for e in es]
+        if not ticked:
+            continue
+        if "minCondition" in d:
+            page.locator("#minCondition").select_option(d["minCondition"])
+        for f in TRI_FIELDS:
+            if f in d:
+                page.locator(f"#{f}").select_option(d[f])
+        if "languages" in d:
+            page.evaluate("""ids => { const s = document.querySelector("select[name='idLanguages[]']");
+                for (const o of s.options) o.selected = ids.includes(o.value);
+                s.dispatchEvent(new Event('change', {bubbles: true})); }""", d["languages"])
+        page.locator('input[type=submit][form=ModifyForm]').click()
+        page.wait_for_load_state("domcontentloaded")
+        page.wait_for_timeout(1000)
+        applied += [e["line"] for key in ticked for e in wanted[key]]
+    return applied, failed
+
+
+def add_decklist(page, list_name, entries):
+    """Pastes the entries' lines into the list's Add Deck List page, then applies any card details.
+    entries: [{'line': '1 Gengar Curse Dark Mind', 'product': 'Gengar [Curse | Dark Mind]', 'details': {...}}]"""
+    lines = [e["line"] for e in entries]
     open_or_create_list(page, list_name)
+    list_url = page.url
+    before_ids = _row_ids(page)
     page.get_by_text(re.compile(r"add deck ?list", re.I)).first.click()
     page.wait_for_load_state("domcontentloaded")
     page.locator("textarea").first.fill("\n".join(lines))
@@ -231,10 +322,16 @@ def add_decklist(page, list_name, lines):
     bad = " ".join(a for a, el in zip(alerts, page.locator(".alert").all())
                    if re.search(r"danger|error", el.get_attribute("class") or ""))
     failed = [l for l in lines if re.sub(r"^\d+x?\s+", "", l, flags=re.I).lower() in bad.lower()]
-    return {"added": [l for l in lines if l not in failed], "not_added": failed, "messages": alerts}
+    added = [l for l in lines if l not in failed]
+    result = {"added": added, "not_added": failed, "messages": alerts, "details_applied": [], "details_failed": []}
+    to_detail = [e for e in entries if e["line"] in added]
+    if any(clean_details(e.get("details")) for e in to_detail):
+        result["details_applied"], result["details_failed"] = apply_details(page, list_url, before_ids, to_detail)
+        _save_debug(page, "after_details")
+    return result
 
 
-def run(lines, list_name, wait_for_login):
+def run(entries, list_name, wait_for_login):
     from playwright.sync_api import sync_playwright
 
     start_chrome()
@@ -243,7 +340,7 @@ def run(lines, list_name, wait_for_login):
         browser = p.chromium.connect_over_cdp(f"http://127.0.0.1:{CDP_PORT}")
         page = browser.contexts[0].pages[0]
         try:
-            return add_decklist(page, list_name, lines)
+            return add_decklist(page, list_name, entries)
         except Exception:
             _save_debug(page, "error")
             raise
@@ -270,7 +367,7 @@ def main():
         return
     if not a.list_name:
         ap.error("--list is required unless --dry-run")
-    res = run([i["line"] for i in ok], a.list_name,
+    res = run([{"line": f"{i['qty']} {i['options'][0]}", "product": i["product"]} for i in ok], a.list_name,
               lambda: input("Log in to Cardmarket in the browser window, then press Enter... "))
     print(f"\nAdded: {len(res['added'])}  Not added: {len(res['not_added'])}")
     for l in res["not_added"]:
