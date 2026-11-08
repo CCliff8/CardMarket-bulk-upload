@@ -12,16 +12,18 @@ const LANGS = [['1', 'English'], ['2', 'French'], ['3', 'German'], ['4', 'Spanis
   ['11', 'T-Chinese'], ['12', 'Dutch'], ['13', 'Polish'], ['14', 'Czech'], ['15', 'Hungarian'],
   ['16', 'Indonesian'], ['17', 'Thai']]
 const TRI = [['isReverseHolo', 'Reverse Holo'], ['isFirstEd', 'First Edition'], ['isSigned', 'Signed'], ['isAltered', 'Altered']]
-const EMPTY_DETAILS = { minCondition: '', languages: [], isReverseHolo: '', isFirstEd: '', isSigned: '', isAltered: '' }
+const EMPTY_DETAILS = { minCondition: '', buyPrice: '', languages: [], isReverseHolo: '', isFirstEd: '', isSigned: '', isAltered: '' }
 
 // a card's own details win; anything it leaves empty falls back to the "all cards" details
 const effective = (own, defaults) => ({
   minCondition: own.minCondition || defaults.minCondition,
+  buyPrice: own.buyPrice || defaults.buyPrice,
   languages: own.languages.length ? own.languages : defaults.languages,
   ...Object.fromEntries(TRI.map(([k]) => [k, own[k] || defaults[k]])),
 })
 const summarize = d => [
   d.minCondition && CONDITIONS.find(c => c[0] === d.minCondition)?.[1].match(/\((\w+)\)/)?.[1],
+  d.buyPrice && `Buy price: ${d.buyPrice} €`,
   d.languages.length && d.languages.map(l => LANGS.find(x => x[0] === l)?.[1]).join('/'),
   ...TRI.map(([k, label]) => d[k] && `${label}: ${d[k] === 'Y' ? 'yes' : 'no'}`),
 ].filter(Boolean)
@@ -35,38 +37,50 @@ const post = (path, body) =>
 
 const qtyOf = i => Math.min(MAX_QTY, Math.max(1, parseInt(i.qty, 10) || 1))
 
-const THEMES = [
-  ['system', 'System theme', <path key="s" d="M4 5h16v11H4zM9 20h6M12 16v4" />],
-  ['light', 'Light theme', <g key="l"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></g>],
-  ['dark', 'Dark theme', <path key="d" d="M21 13A9 9 0 1 1 11 3a7 7 0 0 0 10 10z" />],
-]
+const systemTheme = () => (window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
 
 function ThemeSwitch() {
   const [theme, setTheme] = useState(() => {
-    try { return localStorage.getItem('theme') || 'system' } catch { return 'system' }
+    try {
+      const saved = localStorage.getItem('theme')
+      if (saved === 'light' || saved === 'dark') return saved
+    } catch { /* storage unavailable */ }
+    return systemTheme()
   })
+  useEffect(() => { document.documentElement.setAttribute('data-theme', theme) }, [theme])
   const choose = t => {
     setTheme(t)
-    if (t === 'system') document.documentElement.removeAttribute('data-theme')
-    else document.documentElement.setAttribute('data-theme', t)
-    try {
-      if (t === 'system') localStorage.removeItem('theme')
-      else localStorage.setItem('theme', t)
-    } catch { /* storage unavailable */ }
+    try { localStorage.setItem('theme', t) } catch { /* storage unavailable */ }
   }
   return (
     <div className="theme" role="group" aria-label="Color theme">
-      {THEMES.map(([key, label, icon]) => (
-        <button key={key} type="button" aria-pressed={theme === key} aria-label={label} title={label} onClick={() => choose(key)}>
-          <svg viewBox="0 0 24 24" aria-hidden="true">{icon}</svg>
-        </button>
-      ))}
+      <button type="button" aria-pressed={theme === 'light'} aria-label="Light theme" title="Light theme" onClick={() => choose('light')}>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></svg>
+      </button>
+      <button type="button" aria-pressed={theme === 'dark'} aria-label="Dark theme" title="Dark theme" onClick={() => choose('dark')}>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 13A9 9 0 1 1 11 3a7 7 0 0 0 10 10z" /></svg>
+      </button>
     </div>
   )
 }
 
 function DetailFields({ value, onChange, blank }) {
   const set = patch => onChange({ ...value, ...patch })
+  const langRef = useRef(null)
+  useEffect(() => {
+    const close = e => {
+      const el = langRef.current
+      if (el?.open && (e.type === 'keydown' ? e.key === 'Escape' : !el.contains(e.target))) el.open = false
+    }
+    document.addEventListener('mousedown', close)
+    document.addEventListener('keydown', close)
+    return () => { document.removeEventListener('mousedown', close); document.removeEventListener('keydown', close) }
+  }, [])
+  const setPrice = raw => {
+    const v = raw.replace(',', '.').replace(/[^\d.]/g, '')
+    const [int, ...rest] = v.split('.')
+    set({ buyPrice: rest.length ? `${int.slice(0, 6)}.${rest.join('').slice(0, 2)}` : int.slice(0, 6) })
+  }
   const toggleLang = id =>
     set({ languages: value.languages.includes(id) ? value.languages.filter(l => l !== id) : [...value.languages, id] })
   return (
@@ -77,9 +91,12 @@ function DetailFields({ value, onChange, blank }) {
           {CONDITIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
         </select>
       </label>
+      <label>Buy price (€)
+        <input inputMode="decimal" placeholder={blank} value={value.buyPrice} onChange={e => setPrice(e.target.value)} />
+      </label>
       <div className="lang">
         <span>Language</span>
-        <details className="langpick">
+        <details className="langpick" ref={langRef}>
           <summary>{value.languages.length ? value.languages.map(l => LANGS.find(x => x[0] === l)[1]).join(', ') : blank}</summary>
           <div className="langlist">
             {LANGS.map(([v, l]) => (

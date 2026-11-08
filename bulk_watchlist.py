@@ -243,6 +243,9 @@ def clean_details(d):
     for f in TRI_FIELDS:
         if d.get(f) in ("Y", "N"):
             out[f] = d[f]
+    price = re.fullmatch(r"(\d{1,6})(?:[.,](\d{1,2}))?", str(d.get("buyPrice", "")).strip())
+    if price and float(f"{price.group(1)}.{price.group(2) or 0}") > 0:
+        out["buyPrice"] = f"{int(price.group(1))}.{(price.group(2) or '0').ljust(2, '0')}"
     return out
 
 
@@ -252,6 +255,23 @@ def _rowkey(text):
 
 def _row_ids(page):
     return {c.get_attribute("data-id-want") for c in page.locator('input[name="checkWantsRow[]"]').all()}
+
+
+def _reset_bulk_form(page):
+    """Blank every field of the Bulk modification form. Cardmarket pre-fills it with earlier values, and an
+    untouched field would otherwise be applied too (Move/Copy would even relocate the cards)."""
+    page.evaluate("""() => {
+      const form = document.querySelector('#ModifyForm');
+      for (const el of form.elements) {
+        if (el.tagName === 'SELECT') {
+          for (const o of el.options) o.selected = false;
+          const blank = [...el.options].find(o => o.text.trim() === '');
+          if (blank && !el.multiple) blank.selected = true;
+        } else if (el.type === 'text' || el.type === 'number') {
+          if (el.name !== 'idLanguagesTempInput') el.value = '';
+        }
+      }
+    }""")
 
 
 def apply_details(page, list_url, before_ids, entries):
@@ -274,6 +294,7 @@ def apply_details(page, list_url, before_ids, entries):
             continue
         page.goto(list_url, wait_until="domcontentloaded")
         page.get_by_text("Bulk modification").first.click()
+        _reset_bulk_form(page)
         ticked = set()
         for row in page.locator("tr[role=row]").all():
             box = row.locator('input[name="checkWantsRow[]"]')
@@ -293,6 +314,8 @@ def apply_details(page, list_url, before_ids, entries):
         for f in TRI_FIELDS:
             if f in d:
                 page.locator(f"#{f}").select_option(d[f])
+        if "buyPrice" in d:
+            page.locator("#buyPrice").fill(d["buyPrice"])
         if "languages" in d:
             page.evaluate("""ids => { const s = document.querySelector("select[name='idLanguages[]']");
                 for (const o of s.options) o.selected = ids.includes(o.value);
